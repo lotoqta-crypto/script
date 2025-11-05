@@ -1,0 +1,473 @@
+--[[
+    ═══════════════════════════════════════════════════════════
+    NFT Battle Auto Farm Script
+    Автор: capybara2281337
+    FunPay: https://funpay.com/users/7855080/
+    GUI: Rayfield by Sirius
+    Версия: 5.9 Final
+    ═══════════════════════════════════════════════════════════
+]]
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- ═══════ СОЗДАНИЕ ОКНА С КЛЮЧОМ (НЕ СОХРАНЯЕТСЯ) ═══════
+local Window = Rayfield:CreateWindow({
+    Name = "🎨 NFT Battle | by capybara2281337",
+    Icon = 0,
+    LoadingTitle = "NFT Battle Auto Farm",
+    LoadingSubtitle = "by capybara2281337",
+    ShowText = "Показать/Скрыть GUI (K)",
+    Theme = "Default",
+    ToggleUIKeybind = "K",
+    
+    KeySystem = true, -- КЛЮЧ ВКЛЮЧЕН
+    KeySettings = {
+        Title = "🔐 Система Ключей",
+        Subtitle = "by capybara2281337",
+        Note = "Ключ: capybara2281337",
+        FileName = "CapybaraKeyNFT",
+        SaveKey = false, -- НЕ СОХРАНЯЕТ КЛЮЧ
+        GrabKeyFromSite = false,
+        Key = {"capybara2281337", "https://funpay.com/users/7855080/"}
+    }
+})
+
+-- ═══════ ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ═══════
+local farmingThreads = {}
+local selectedCase = "Trash"
+local currentAICase = "Beggar"
+local auto = 0
+local autoSellActive = false
+
+-- Профит система
+local initialBalance = 0
+local currentProfit = 0
+local profitTracking = false
+local startTime = 0
+
+-- ═══════ КОНФИГУРАЦИЯ КЕЙСОВ ═══════
+local allCaseTypes = {
+    "Trash", "Daily", "Beggar", "Plodder", "Office Clerk", "Manager", 
+    "Director", "Oligarch", "Frozen Heart", "Bubble Gum", "Cats", 
+    "Glitch", "Dream", "Bloody Night", "M5", "F90", "G63", 
+    "Porsche 911", "URUS", "Gold", "Dark", "Palm", "Burj", "Luxury"
+}
+
+-- ИИ: Прогрессия кейсов по балансу звезд
+local aiProgression = {
+    {threshold = 0, case = "Beggar", name = "Beggar (0-4999⭐)"},
+    {threshold = 5000, case = "Plodder", name = "Plodder (5000-9999⭐)"},
+    {threshold = 10000, case = "Director", name = "Director (10000-19999⭐)"},
+    {threshold = 20000, case = "Gold", name = "Gold (20000+⭐) [ФИНАЛ]"}
+}
+
+-- ═══════ ОСНОВНЫЕ ФУНКЦИИ ═══════
+local function getStarBalance()
+    local success, balance = pcall(function()
+        local player = game.Players.LocalPlayer
+        
+        -- Вариант 1: Leaderstats
+        if player:FindFirstChild("leaderstats") then
+            if player.leaderstats:FindFirstChild("Stars") then
+                return player.leaderstats.Stars.Value
+            elseif player.leaderstats:FindFirstChild("⭐") then
+                return player.leaderstats["⭐"].Value
+            elseif player.leaderstats:FindFirstChild("Money") then
+                return player.leaderstats.Money.Value
+            end
+        end
+        
+        -- Вариант 2: PlayerGui
+        local playerGui = player:FindFirstChild("PlayerGui")
+        if playerGui then
+            for _, gui in pairs(playerGui:GetDescendants()) do
+                if gui:IsA("TextLabel") and (gui.Name == "Stars" or gui.Name == "Money" or gui.Name == "Balance") then
+                    local text = gui.Text:gsub(",", ""):gsub("⭐", ""):gsub(" ", "")
+                    local num = tonumber(text)
+                    if num then return num end
+                end
+            end
+        end
+        
+        return 0
+    end)
+    
+    return success and balance or 0
+end
+
+local function selectAICase(stars)
+    local selectedTier = aiProgression[1]
+    
+    for i = #aiProgression, 1, -1 do
+        if stars >= aiProgression[i].threshold then
+            selectedTier = aiProgression[i]
+            break
+        end
+    end
+    
+    return selectedTier.case, selectedTier.name
+end
+
+local function formatTime(seconds)
+    local hours = math.floor(seconds / 3600)
+    local minutes = math.floor((seconds % 3600) / 60)
+    local secs = seconds % 60
+    return string.format("%02d:%02d:%02d", hours, minutes, secs)
+end
+
+local function formatNumber(num)
+    if num >= 1000000 then
+        return string.format("%.2fM", num / 1000000)
+    elseif num >= 1000 then
+        return string.format("%.2fK", num / 1000)
+    else
+        return tostring(num)
+    end
+end
+
+-- ═══════ СОЗДАНИЕ ТАБОВ ═══════
+local TabMain = Window:CreateTab("🎯 ИИ Автофарм", "cpu")
+local TabManual = Window:CreateTab("✋ Вручную", "hand")
+local TabInfo = Window:CreateTab("ℹ️ Инфо", "info")
+
+-- ═══════════════════════════════════════════════════════════
+-- ТАБ: ИИ АВТОФАРМ
+-- ═══════════════════════════════════════════════════════════
+TabMain:CreateSection("🤖 ИИ Умный Автофарм")
+
+local aiActive = false
+local aiStarsLabel = TabMain:CreateLabel("Баланс: 0 ⭐ | Кейс: Beggar")
+
+TabMain:CreateToggle({
+    Name = "🧠 ИИ Автофарм (Прогрессия до Gold)",
+    CurrentValue = false,
+    Callback = function(Value)
+        aiActive = Value
+        
+        if Value then
+            -- Сохраняем начальный баланс для профита
+            initialBalance = getStarBalance()
+            currentProfit = 0
+            profitTracking = true
+            auto = 0
+            startTime = tick()
+            
+            local reachedGold = false
+            
+            farmingThreads["ai"] = task.spawn(function()
+                while aiActive do
+                    local stars = getStarBalance()
+                    local caseToOpen, tierName = selectAICase(stars)
+                    
+                    -- Проверка достижения Gold
+                    if caseToOpen == "Gold" and not reachedGold then
+                        reachedGold = true
+                        Rayfield:Notify({
+                            Title = "👑 ЗОЛОТОЙ УРОВЕНЬ!",
+                            Content = "Достигнут Gold! Бесконечный фарм...",
+                            Duration = 5,
+                            Image = "crown"
+                        })
+                    end
+                    
+                    currentAICase = caseToOpen
+                    aiStarsLabel:Set("Баланс: " .. formatNumber(stars) .. " ⭐ | Кейс: " .. caseToOpen)
+                    
+                    -- ОТКРЫТИЕ КЕЙСА
+                    local args = {caseToOpen, 10}
+                    game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("OpenCase"):InvokeServer(unpack(args))
+                    
+                    wait(0.5)
+                end
+            end)
+            
+            Rayfield:Notify({
+                Title = "✅ ИИ Активирован",
+                Content = "Умная прогрессия активна",
+                Duration = 3
+            })
+        else
+            if farmingThreads["ai"] then
+                task.cancel(farmingThreads["ai"])
+                farmingThreads["ai"] = nil
+            end
+            
+            profitTracking = false
+            
+            aiStarsLabel:Set("Баланс: 0 ⭐ | Кейс: Остановлен")
+            Rayfield:Notify({
+                Title = "⛔ ИИ Остановлен",
+                Content = "Автофарм выключен",
+                Duration = 3
+            })
+        end
+    end
+})
+
+-- ПЕРЕКЛЮЧАТЕЛЬ АВТОПРОДАЖИ
+TabMain:CreateToggle({
+    Name = "💰 Автопродажа (каждую 1 сек)",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoSellActive = Value
+        
+        if Value then
+            farmingThreads["autoSell"] = task.spawn(function()
+                while autoSellActive do
+                    local args = {"Sell", "ALL"}
+                    game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("Inventory"):FireServer(unpack(args))
+                    wait(1)
+                    auto = auto + 1
+                end
+            end)
+            
+            Rayfield:Notify({
+                Title = "✅ Автопродажа включена",
+                Content = "Продажа каждую секунду",
+                Duration = 3
+            })
+        else
+            if farmingThreads["autoSell"] then
+                task.cancel(farmingThreads["autoSell"])
+                farmingThreads["autoSell"] = nil
+            end
+            
+            Rayfield:Notify({
+                Title = "⛔ Автопродажа выключена",
+                Content = "Продажа остановлена",
+                Duration = 3
+            })
+        end
+    end
+})
+
+-- ПРОФИТ
+TabMain:CreateSection("💰 Профит")
+
+local profitLabel = TabMain:CreateLabel("💵 Заработано: 0 ⭐")
+local timeLabel = TabMain:CreateLabel("⏱️ Время работы: 00:00:00")
+local balanceLabel = TabMain:CreateLabel("💰 Текущий баланс: 0 ⭐")
+
+-- Автоматическое обновление профита каждые 0.5 секунд
+local updateStats = task.spawn(function()
+    while true do
+        if profitTracking then
+            local currentTime = tick()
+            local elapsed = math.floor(currentTime - startTime)
+            local currentBalance = getStarBalance()
+            
+            -- Обновляем профит каждую итерацию (каждые 0.5 сек)
+            currentProfit = currentBalance - initialBalance
+            
+            profitLabel:Set("💵 Заработано: " .. formatNumber(currentProfit) .. " ⭐")
+            timeLabel:Set("⏱️ Время работы: " .. formatTime(elapsed))
+            balanceLabel:Set("💰 Текущий баланс: " .. formatNumber(currentBalance) .. " ⭐")
+        else
+            profitLabel:Set("💵 Заработано: 0 ⭐")
+            timeLabel:Set("⏱️ Время работы: 00:00:00")
+            balanceLabel:Set("💰 Текущий баланс: 0 ⭐")
+        end
+        
+        task.wait(0.5)
+    end
+end)
+
+TabMain:CreateButton({
+    Name = "🗑️ Сбросить статистику",
+    Callback = function()
+        initialBalance = getStarBalance()
+        currentProfit = 0
+        auto = 0
+        startTime = tick()
+        
+        Rayfield:Notify({
+            Title = "✅ Сброшено",
+            Content = "Статистика обнулена",
+            Duration = 2
+        })
+    end
+})
+
+TabMain:CreateButton({
+    Name = "🛑 Остановить все автофармы",
+    Callback = function()
+        aiActive = false
+        autoSellActive = false
+        
+        for key, thread in pairs(farmingThreads) do
+            pcall(function() task.cancel(thread) end)
+        end
+        farmingThreads = {}
+        
+        profitTracking = false
+        
+        Rayfield:Notify({Title = "⛔ Остановлено", Content = "Все автофармы остановлены", Duration = 3})
+    end
+})
+
+-- ═══════════════════════════════════════════════════════════
+-- ТАБ: ВРУЧНУЮ
+-- ═══════════════════════════════════════════════════════════
+TabManual:CreateSection("Настройка открытия")
+
+local manualCaseSelect = "Trash"
+local manualAmount = 100
+
+TabManual:CreateDropdown({
+    Name = "Выбор кейса",
+    Options = allCaseTypes,
+    CurrentOption = {"Trash"},
+    MultipleOptions = false,
+    Callback = function(Option)
+        manualCaseSelect = Option[1]
+    end
+})
+
+TabManual:CreateInput({
+    Name = "Количество кейсов для открытия",
+    PlaceholderText = "Например: 65349",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text)
+        local num = tonumber(Text)
+        if num and num > 0 then
+            manualAmount = num
+        end
+    end
+})
+
+TabManual:CreateButton({
+    Name = "🚀 Начать открытие",
+    Callback = function()
+        task.spawn(function()
+            local fullIterations = math.floor(manualAmount / 10)
+            local remainder = manualAmount % 10
+            
+            Rayfield:Notify({
+                Title = "🔄 Запущено",
+                Content = string.format("Открытие %d кейсов: %s", manualAmount, manualCaseSelect),
+                Duration = 4
+            })
+            
+            for i = 1, fullIterations do
+                local args = {manualCaseSelect, 10}
+                game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("OpenCase"):InvokeServer(unpack(args))
+                wait(0.5)
+            end
+            
+            if remainder > 0 then
+                local args = {manualCaseSelect, remainder}
+                game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("OpenCase"):InvokeServer(unpack(args))
+                wait(0.5)
+            end
+            
+            Rayfield:Notify({
+                Title = "✅ Завершено",
+                Content = string.format("Открыто %d кейсов", manualAmount),
+                Duration = 5
+            })
+        end)
+    end
+})
+
+TabManual:CreateSection("Быстрые пресеты")
+
+local presets = {
+    {name = "100 кейсов", amount = 100},
+    {name = "500 кейсов", amount = 500},
+    {name = "1000 кейсов", amount = 1000},
+    {name = "5000 кейсов", amount = 5000},
+    {name = "10000 кейсов", amount = 10000}
+}
+
+for _, preset in ipairs(presets) do
+    TabManual:CreateButton({
+        Name = preset.name,
+        Callback = function()
+            task.spawn(function()
+                local fullIterations = math.floor(preset.amount / 10)
+                local remainder = preset.amount % 10
+                
+                Rayfield:Notify({
+                    Title = "🔄 Запущено",
+                    Content = string.format("%s: %s", preset.name, manualCaseSelect),
+                    Duration = 3
+                })
+                
+                for i = 1, fullIterations do
+                    local args = {manualCaseSelect, 10}
+                    game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("OpenCase"):InvokeServer(unpack(args))
+                    wait(0.5)
+                end
+                
+                if remainder > 0 then
+                    local args = {manualCaseSelect, remainder}
+                    game:GetService("ReplicatedStorage"):WaitForChild("Events"):WaitForChild("OpenCase"):InvokeServer(unpack(args))
+                    wait(0.5)
+                end
+                
+                Rayfield:Notify({
+                    Title = "✅ Завершено",
+                    Content = preset.name,
+                    Duration = 3
+                })
+            end)
+        end
+    })
+end
+
+-- ═══════════════════════════════════════════════════════════
+-- ТАБ: ИНФОРМАЦИЯ
+-- ═══════════════════════════════════════════════════════════
+TabInfo:CreateSection("ℹ️ О скрипте")
+
+TabInfo:CreateLabel("📝 Версия: 5.9 Final")
+TabInfo:CreateLabel("👨‍💻 Автор: capybara2281337")
+TabInfo:CreateLabel("🎨 GUI: Rayfield by Sirius")
+TabInfo:CreateLabel("🎮 Игра: NFT Battle")
+
+TabInfo:CreateSection("🤖 Возможности")
+
+TabInfo:CreateLabel("🧠 ИИ прогрессия: Beggar → Plodder → Director → Gold")
+TabInfo:CreateLabel("✅ Независимая автопродажа (toggle)")
+TabInfo:CreateLabel("✋ Ручное открытие любого количества")
+TabInfo:CreateLabel("💰 Профит с обновлением каждые 0.5 сек")
+TabInfo:CreateLabel("📊 Детальная статистика фарма")
+
+TabInfo:CreateSection("⚙️ Тестирование")
+
+TabInfo:CreateLabel("✅ Delta (Android)")
+TabInfo:CreateLabel("✅ Seliware (Desktop)")
+TabInfo:CreateLabel("⚠️ На мобильных возможны баги")
+
+TabInfo:CreateSection("🔗 Ссылки")
+
+TabInfo:CreateButton({
+    Name = "💳 FunPay автора",
+    Callback = function()
+        setclipboard("https://funpay.com/users/7855080/")
+        Rayfield:Notify({
+            Title = "📋 Скопировано",
+            Content = "Ссылка скопирована в буфер",
+            Duration = 3
+        })
+    end
+})
+
+TabInfo:CreateSection("⚡ Управление")
+
+TabInfo:CreateButton({
+    Name = "❌ Закрыть GUI",
+    Callback = function()
+        Rayfield:Destroy()
+    end
+})
+
+-- ═══════════════════════════════════════════════════════════
+-- УВЕДОМЛЕНИЕ О ЗАПУСКЕ
+-- ═══════════════════════════════════════════════════════════
+Rayfield:Notify({
+    Title = "✅ Скрипт загружен!",
+    Content = "NFT Battle v5.9 by capybara2281337",
+    Duration = 5,
+    Image = "check-circle"
+})
